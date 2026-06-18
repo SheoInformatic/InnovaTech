@@ -1,0 +1,239 @@
+name: Build and Deploy to EKS
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - 'backend-products/**'
+      - 'backend-orders/**'
+      - 'frontend/**'
+      - 'k8s/**'
+      - '.github/workflows/eks-deploy.yml'
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+  EKS_CLUSTER_NAME: inovatech-cluster
+  NAMESPACE: inovatech
+
+jobs:
+  build-and-push:
+    name: Build and Push Images to ECR
+    runs-on: ubuntu-latest
+    outputs:
+      products-image: ${{ steps.images.outputs.products }}
+      orders-image: ${{ steps.images.outputs.orders }}
+      frontend-image: ${{ steps.images.outputs.frontend }}
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
+
+    - name: Build, tag, and push Products image
+      id: build-products
+      env:
+        ECR_REPOSITORY: inovatech/products
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest backend-products/
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Build, tag, and push Orders image
+      id: build-orders
+      env:
+        ECR_REPOSITORY: inovatech/orders
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest backend-orders/
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Build, tag, and push Frontend image
+      id: build-frontend
+      env:
+        ECR_REPOSITORY: inovatech/frontend
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest frontend/
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+        echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+    - name: Store image URIs
+      id: images
+      run: |
+        echo "products=${{ steps.build-products.outputs.image }}" >> $GITHUB_OUTPUT
+        echo "orders=${{ steps.build-orders.outputs.image }}" >> $GITHUB_OUTPUT
+        echo "frontend=${{ steps.build-frontend.outputs.image }}" >> $GITHUB_OUTPUT
+
+  deploy:
+    name: Deploy to EKS
+    needs: build-and-push
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+    - name: Create namespace if not exists
+      run: |
+        kubectl create namespace ${{ env.NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+
+    - name: Apply ConfigMaps and Secrets
+      run: |
+        kubectl apply -f k8s/configmap.yaml
+        kubectl apply -f k8s/secret.yaml
+        kubectl apply -f k8s/mysql-init-configmap.yaml
+
+    - name: Deploy MySQL
+      run: |
+        kubectl apply -f k8s/mysql.yaml
+        kubectl rollout status deployment/mysql -n ${{ env.NAMESPACE }} --timeout=5m
+
+    - name: Update Products Deployment image
+      run: |
+        kubectl set image deployment/products-service products-service=${{ needs.build-and-push.outputs.products-image }} \
+          -n ${{ env.NAMESPACE }} || kubectl apply -f k8s/products-deployment.yaml
+
+    - name: Update Orders Deployment image
+      run: |
+        kubectl set image deployment/orders-service orders-service=${{ needs.build-and-push.outputs.orders-image }} \
+          -n ${{ env.NAMESPACE }} || kubectl apply -f k8s/orders-deployment.yaml
+
+    - name: Update Frontend Deployment image
+      run: |
+        kubectl set image deployment/frontend frontend=${{ needs.build-and-push.outputs.frontend-image }} \
+          -n ${{ env.NAMESPACE }} || kubectl apply -f k8s/frontend-deployment.yaml
+
+    - name: Apply Network Policies and RBAC
+      run: |
+        kubectl apply -f k8s/network-policy.yaml
+        kubectl apply -f k8s/rbac.yaml
+
+    - name: Apply HPA
+      run: |
+        kubectl apply -f k8s/hpa.yaml
+
+    - name: Apply Ingress
+      run: |
+        kubectl apply -f k8s/ingress.yaml
+
+    - name: Wait for rollout
+      run: |
+        kubectl rollout status deployment/products-service -n ${{ env.NAMESPACE }} --timeout=5m
+        kubectl rollout status deployment/orders-service -n ${{ env.NAMESPACE }} --timeout=5m
+        kubectl rollout status deployment/frontend -n ${{ env.NAMESPACE }} --timeout=5m
+
+    - name: Get service endpoints
+      run: |
+        echo "=== Frontend Service ==="
+        kubectl get svc frontend-service -n ${{ env.NAMESPACE }}
+        echo ""
+        echo "=== All Services ==="
+        kubectl get svc -n ${{ env.NAMESPACE }}
+        echo ""
+        echo "=== Deployment Status ==="
+        kubectl get deployments -n ${{ env.NAMESPACE }}
+
+  test:
+    name: Run Smoke Tests
+    needs: deploy
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ env.AWS_REGION }}
+
+    - name: Update kubeconfig
+      run: |
+        aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+    - name: Get LoadBalancer endpoint
+      id: endpoint
+      run: |
+        for i in {1..30}; do
+          ENDPOINT=$(kubectl get svc frontend-service -n ${{ env.NAMESPACE }} -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          if [ ! -z "$ENDPOINT" ]; then
+            echo "endpoint=$ENDPOINT" >> $GITHUB_OUTPUT
+            break
+          fi
+          echo "Waiting for LoadBalancer endpoint... ($i/30)"
+          sleep 10
+        done
+
+    - name: Test frontend health
+      if: steps.endpoint.outputs.endpoint
+      run: |
+        ENDPOINT=${{ steps.endpoint.outputs.endpoint }}
+        for i in {1..10}; do
+          curl -s http://$ENDPOINT/health || echo "Attempt $i failed, retrying..."
+          sleep 5
+        done
+
+    - name: Test products API
+      run: |
+        kubectl port-forward -n ${{ env.NAMESPACE }} svc/products-service 3001:3001 &
+        sleep 5
+        curl -s http://localhost:3001/health | grep UP || exit 1
+
+    - name: Test orders API
+      run: |
+        kubectl port-forward -n ${{ env.NAMESPACE }} svc/orders-service 3002:3002 &
+        sleep 5
+        curl -s http://localhost:3002/health | grep UP || exit 1
+
+  notify:
+    name: Send Notification
+    needs: [build-and-push, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+
+    steps:
+    - name: Build Status
+      run: |
+        if [ "${{ needs.build-and-push.result }}" = "success" ] && [ "${{ needs.deploy.result }}" = "success" ]; then
+          echo "✅ Build and Deploy successful!"
+          exit 0
+        else
+          echo "❌ Build or Deploy failed!"
+          exit 1
+        fi

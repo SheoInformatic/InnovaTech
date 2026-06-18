@@ -1,0 +1,44 @@
+CREATE DATABASE IF NOT EXISTS inovatech;
+USE inovatech;
+
+-- Products table
+CREATE TABLE IF NOT EXISTS products (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  name VARCHAR(255) NOT NULL,
+  description TEXT,
+  price DECIMAL(10, 2) NOT NULL,
+  stock INT DEFAULT 0,
+  platform VARCHAR(50) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- Orders table
+CREATE TABLE IF NOT EXISTS orders (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  customer_name VARCHAR(255) NOT NULL,
+  product_id INT NOT NULL,
+  quantity INT NOT NULL DEFAULT 1,
+  total_price DECIMAL(10, 2) NOT NULL,
+  order_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  status VARCHAR(50) DEFAULT 'pending',
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
+);
+
+-- Sample data
+INSERT INTO products (name, description, price, stock, platform) VALUES
+('Elden Ring', 'Action RPG with stunning graphics', 59.99, 50, 'PlayStation'),
+('Zelda: Tears of the Kingdom', 'Epic adventure on Nintendo Switch', 69.99, 45, 'Nintendo'),
+('Starfield', 'Sci-fi RPG from Bethesda', 69.99, 40, 'PC'),
+('Final Fantasy XVI', 'Latest installment in the FF series', 59.99, 35, 'PlayStation'),
+('Baldurs Gate 3', 'Turn-based RPG masterpiece', 59.99, 50, 'PC'),
+('Mario Kart 8 Deluxe', 'Racing fun for all ages', 59.99, 60, 'Nintendo'),
+('Forspoken', 'Fantasy action adventure', 49.99, 25, 'PlayStation'),
+('Cyberpunk 2077', 'Immersive open-world RPG', 49.99, 30, 'PC');
+
+-- Create index for better performance
+CREATE INDEX idx_product_platform ON products(platform);
+CREATE INDEX idx_order_customer ON orders(customer_name);
+CREATE INDEX idx_order_product ON orders(product_id);
