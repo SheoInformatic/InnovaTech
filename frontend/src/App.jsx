@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react'
 import axios from 'axios'
 import './App.css'
 
-const API_PRODUCTS = 'http://localhost:3001/api/products'
-const API_ORDERS = 'http://localhost:3002/api/orders'
+const API_PRODUCTS = 'http://a60717bab057a494e85e31614436ec10-2117845323.us-east-1.elb.amazonaws.com/api/products'
+const API_ORDERS = 'http://a0882ac85b088436d98569fbc4e9eb03-501305419.us-east-1.elb.amazonaws.com/api/orders'
 
 function App() {
   const [products, setProducts] = useState([])
