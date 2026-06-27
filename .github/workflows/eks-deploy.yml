@@ -14,74 +14,37 @@ on:
 
 env:
   AWS_REGION: us-east-1
-  ECR_REGISTRY: ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
   EKS_CLUSTER_NAME: inovatech-cluster
   NAMESPACE: inovatech
+  DOCKERHUB_REPO: sheocontainer
 
 jobs:
   build-and-push:
-    name: Build and Push Images to ECR
+    name: Build and Push Images to Docker Hub
     runs-on: self-hosted
-    outputs:
-      products-image: ${{ steps.images.outputs.products }}
-      orders-image: ${{ steps.images.outputs.orders }}
-      frontend-image: ${{ steps.images.outputs.frontend }}
 
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
 
-    - name: Configure AWS credentials
+    - name: Login to Docker Hub
       run: |
-        aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws configure set aws_session_token ${{ secrets.AWS_SESSION_TOKEN }}
-        aws configure set region us-east-1
-
-    - name: Login to Amazon ECR
-      id: login-ecr
-      run: |
-        aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.us-east-1.amazonaws.com
+        echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
     - name: Build and push Products image
-      id: build-products
-      env:
-        ECR_REPOSITORY: inovatech/products
-        IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest backend-products/
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        echo "products=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        docker build -t $DOCKERHUB_REPO/inovatech-products:latest backend-products/
+        docker push $DOCKERHUB_REPO/inovatech-products:latest
 
     - name: Build and push Orders image
-      id: build-orders
-      env:
-        ECR_REPOSITORY: inovatech/orders
-        IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest backend-orders/
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        echo "orders=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+        docker build -t $DOCKERHUB_REPO/inovatech-orders:latest backend-orders/
+        docker push $DOCKERHUB_REPO/inovatech-orders:latest
 
     - name: Build and push Frontend image
-      id: build-frontend
-      env:
-        ECR_REPOSITORY: inovatech/frontend
-        IMAGE_TAG: ${{ github.sha }}
       run: |
-        docker build --no-cache -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -t $ECR_REGISTRY/$ECR_REPOSITORY:latest frontend/
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-        echo "frontend=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-    - name: Store image URIs
-      id: images
-      run: |
-        echo "products=${{ steps.build-products.outputs.products }}" >> $GITHUB_OUTPUT
-        echo "orders=${{ steps.build-orders.outputs.orders }}" >> $GITHUB_OUTPUT
-        echo "frontend=${{ steps.build-frontend.outputs.frontend }}" >> $GITHUB_OUTPUT
+        docker build --no-cache -t $DOCKERHUB_REPO/inovatech-frontend:latest frontend/
+        docker push $DOCKERHUB_REPO/inovatech-frontend:latest
 
   deploy:
     name: Deploy to EKS
@@ -93,12 +56,11 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-        aws-region: ${{ env.AWS_REGION }}
+      run: |
+        aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws configure set aws_session_token ${{ secrets.AWS_SESSION_TOKEN }}
+        aws configure set region us-east-1
 
     - name: Update kubeconfig
       run: |
@@ -117,9 +79,9 @@ jobs:
 
     - name: Update images
       run: |
-        kubectl set image deployment/products-service products-service=${{ env.ECR_REGISTRY }}/inovatech/products:latest -n ${{ env.NAMESPACE }}
-        kubectl set image deployment/orders-service orders-service=${{ env.ECR_REGISTRY }}/inovatech/orders:latest -n ${{ env.NAMESPACE }}
-        kubectl set image deployment/frontend frontend=${{ env.ECR_REGISTRY }}/inovatech/frontend:latest -n ${{ env.NAMESPACE }}
+        kubectl set image deployment/products-service products-service=$DOCKERHUB_REPO/inovatech-products:latest -n ${{ env.NAMESPACE }}
+        kubectl set image deployment/orders-service orders-service=$DOCKERHUB_REPO/inovatech-orders:latest -n ${{ env.NAMESPACE }}
+        kubectl set image deployment/frontend frontend=$DOCKERHUB_REPO/inovatech-frontend:latest -n ${{ env.NAMESPACE }}
 
     - name: Wait for rollout
       run: |
